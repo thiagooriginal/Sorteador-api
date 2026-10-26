@@ -60,28 +60,42 @@ async function ensureLoggedIn(page) {
   }
 
   // Login fresco
-  console.log('🔐 Fazendo login no Instagram...');
-  await page.goto('https://www.instagram.com/accounts/login/', { waitUntil: 'networkidle2', timeout: 30000 });
-
-  await page.waitForSelector('input[name="username"]', { timeout: 15000 });
-  await page.type('input[name="username"]', IG_USER, { delay: 80 });
-  await page.type('input[name="password"]', IG_PASS, { delay: 80 });
-  await page.click('button[type="submit"]');
-
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-
-  // Aguardar possíveis modais de "salvar login"
-  await new Promise(r => setTimeout(r, 3000));
+  // Lidar com modal de cookies do Instagram se existir
   try {
-    const notNow = await page.$('button:has-text("Agora não"), button:has-text("Not now")');
-    if (notNow) await notNow.click();
-  } catch (e) {}
+    const buttons = await page.$$('button');
+    for (const btn of buttons) {
+      const txt = await page.evaluate(el => (el.textContent || '').toLowerCase(), btn);
+      if (txt.includes('permitir') || txt.includes('allow') || txt.includes('aceitar') || txt.includes('accept') || txt.includes('essential')) {
+        await btn.click().catch(() => {});
+        await new Promise(r => setTimeout(r, 1500));
+        break;
+      }
+    }
+  } catch(e) {}
 
-  // Salvar cookies para próximas vezes
-  const cookies = await page.cookies();
-  fs.mkdirSync(path.dirname(COOKIES_FILE), { recursive: true });
-  fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies));
-  console.log('✅ Login efetuado e cookies salvos!');
+  try {
+    await page.waitForSelector('input[name="username"]', { timeout: 10000 });
+    await page.type('input[name="username"]', IG_USER, { delay: 80 });
+    await page.type('input[name="password"]', IG_PASS, { delay: 80 });
+    await page.click('button[type="submit"]');
+
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }).catch(() => {});
+
+    // Aguardar possíveis modais de "salvar login"
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const notNow = await page.$('button:has-text("Agora não"), button:has-text("Not now")');
+      if (notNow) await notNow.click();
+    } catch (e) {}
+
+    // Salvar cookies para próximas vezes
+    const cookies = await page.cookies();
+    fs.mkdirSync(path.dirname(COOKIES_FILE), { recursive: true });
+    fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies));
+    console.log('✅ Login efetuado e cookies salvos!');
+  } catch (err) {
+    console.log('⚠️ Aviso ao fazer login:', err.message, '- continuando mesmo assim');
+  }
   return true;
 }
 
@@ -101,7 +115,13 @@ app.get('/api/comentarios', async (req, res) => {
     await page.setViewport({ width: 1280, height: 900 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    await ensureLoggedIn(page);
+    try {
+      if (IG_USER && IG_PASS) {
+        await ensureLoggedIn(page);
+      }
+    } catch (e) {
+      console.log('⚠️ Login ignorado:', e.message);
+    }
 
     // Interceptar respostas da API do Instagram (melhor método)
     const comments = new Map();
