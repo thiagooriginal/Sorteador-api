@@ -11,6 +11,7 @@ app.use(express.json());
 const COOKIES_FILE = path.join(__dirname, 'cookies_session.json');
 const IG_USER = process.env.IG_USERNAME || '';
 const IG_PASS = process.env.IG_PASSWORD || '';
+const IG_SESSION = process.env.IG_SESSION_ID || '';
 
 let browserInstance = null;
 let isLoggingIn = false;
@@ -26,6 +27,7 @@ async function getBrowser() {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
+      '--disable-blink-features=AutomationControlled',
       '--no-first-run',
       '--no-zygote',
       '--disable-gpu',
@@ -37,6 +39,21 @@ async function getBrowser() {
 
 // ─── Login no Instagram ───────────────────────────────────────────────────────
 async function ensureLoggedIn(page) {
+  // 1. Usar sessionid direto (se configurado)
+  if (IG_SESSION) {
+    console.log('🍪 Aplicando cookie de autenticação oficial (sessionid)...');
+    await page.setCookie({
+      name: 'sessionid',
+      value: IG_SESSION.trim(),
+      domain: '.instagram.com',
+      path: '/',
+      httpOnly: true,
+      secure: true
+    });
+    console.log('✅ Autenticado via sessionid com sucesso!');
+    return true;
+  }
+
   // Tentar usar cookies salvos primeiro
   if (fs.existsSync(COOKIES_FILE)) {
     try {
@@ -59,7 +76,10 @@ async function ensureLoggedIn(page) {
     }
   }
 
-  // Login fresco
+  // Login fresco com stealth
+  console.log('🔐 Fazendo login no Instagram com credenciais...');
+  await page.goto('https://www.instagram.com/accounts/login/', { waitUntil: 'networkidle2', timeout: 30000 });
+
   // Lidar com modal de cookies do Instagram se existir
   try {
     const buttons = await page.$$('button');
@@ -74,25 +94,23 @@ async function ensureLoggedIn(page) {
   } catch(e) {}
 
   try {
-    await page.waitForSelector('input[name="username"]', { timeout: 10000 });
-    await page.type('input[name="username"]', IG_USER, { delay: 80 });
-    await page.type('input[name="password"]', IG_PASS, { delay: 80 });
-    await page.click('button[type="submit"]');
+    await page.waitForSelector('input[name="username"], input[type="text"]', { timeout: 15000 });
+    const userField = await page.$('input[name="username"]') || await page.$('input[type="text"]');
+    const passField = await page.$('input[name="password"]') || await page.$('input[type="password"]');
 
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }).catch(() => {});
+    if (userField && passField) {
+      await userField.type(IG_USER, { delay: 90 });
+      await passField.type(IG_PASS, { delay: 90 });
+      await page.click('button[type="submit"]');
 
-    // Aguardar possíveis modais de "salvar login"
-    await new Promise(r => setTimeout(r, 3000));
-    try {
-      const notNow = await page.$('button:has-text("Agora não"), button:has-text("Not now")');
-      if (notNow) await notNow.click();
-    } catch (e) {}
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }).catch(() => {});
 
-    // Salvar cookies para próximas vezes
-    const cookies = await page.cookies();
-    fs.mkdirSync(path.dirname(COOKIES_FILE), { recursive: true });
-    fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies));
-    console.log('✅ Login efetuado e cookies salvos!');
+      // Salvar cookies para próximas vezes
+      const cookies = await page.cookies();
+      fs.mkdirSync(path.dirname(COOKIES_FILE), { recursive: true });
+      fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookies));
+      console.log('✅ Login efetuado e cookies salvos com sucesso!');
+    }
   } catch (err) {
     console.log('⚠️ Aviso ao fazer login:', err.message, '- continuando mesmo assim');
   }
@@ -113,10 +131,18 @@ app.get('/api/comentarios', async (req, res) => {
     const browser = await getBrowser();
     page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+
+    // Máscara anti-detecção
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      window.navigator.chrome = { runtime: {} };
+      Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    });
 
     try {
-      if (IG_USER && IG_PASS) {
+      if (IG_SESSION || (IG_USER && IG_PASS)) {
         await ensureLoggedIn(page);
       }
     } catch (e) {
