@@ -42,16 +42,31 @@ async function ensureLoggedIn(page) {
   // 1. Usar sessionid direto (se configurado)
   if (IG_SESSION) {
     console.log('🍪 Aplicando cookie de autenticação oficial (sessionid)...');
-    await page.setCookie({
-      name: 'sessionid',
-      value: IG_SESSION.trim(),
-      domain: '.instagram.com',
-      path: '/',
-      httpOnly: true,
-      secure: true
-    });
-    console.log('✅ Autenticado via sessionid com sucesso!');
-    return true;
+    try {
+      const dsUserId = IG_SESSION.split('%3A')[0].split(':')[0].trim();
+      await page.setCookie(
+        {
+          name: 'sessionid',
+          value: IG_SESSION.trim(),
+          url: 'https://www.instagram.com',
+          domain: '.instagram.com',
+          path: '/',
+          httpOnly: true,
+          secure: true
+        },
+        {
+          name: 'ds_user_id',
+          value: dsUserId,
+          url: 'https://www.instagram.com',
+          domain: '.instagram.com',
+          path: '/'
+        }
+      );
+      console.log(`✅ Autenticado via sessionid (usuário ID: ${dsUserId}) com sucesso!`);
+      return true;
+    } catch (cookieErr) {
+      console.error('❌ Erro ao aplicar cookie:', cookieErr.message);
+    }
   }
 
   // Tentar usar cookies salvos primeiro
@@ -189,32 +204,91 @@ app.get('/api/comentarios', async (req, res) => {
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(r => setTimeout(r, 3000));
 
-    // Scroll e cliques automáticos por até 3 minutos
-    const maxSteps = 360; // 360 × 500ms = 3 minutos
+    // Fechar modais intrusivos do Instagram ("Agora não", "Not Now", cookies, etc.)
+    await page.evaluate(() => {
+      document.querySelectorAll('button').forEach(btn => {
+        const t = (btn.innerText || '').toLowerCase();
+        if (t.includes('agora não') || t.includes('not now') || t.includes('cancel') || t.includes('recusar') || t.includes('permitir') || t.includes('accept')) {
+          try { btn.click(); } catch(e) {}
+        }
+      });
+    });
+
+    // Scroll e cliques automáticos por até 4 minutos
+    const maxSteps = 400;
     let unchangedSteps = 0;
     let lastCount = 0;
 
     for (let i = 0; i < maxSteps; i++) {
-      // Clicar em "ver mais comentários" e "+"
-      await page.evaluate(() => {
+      const domItems = await page.evaluate(() => {
+        // 1. Rolar QUALQUER container que tenha scroll vertical
+        const all = document.querySelectorAll('*');
+        for (const el of all) {
+          if (el.scrollHeight > el.clientHeight && el.clientHeight > 150) {
+            el.scrollTop = el.scrollHeight;
+          }
+        }
+        window.scrollBy(0, 3000);
+
+        // 2. Clicar em botões de carregar mais comentários
         document.querySelectorAll('button, div[role="button"], span[role="button"]').forEach(btn => {
           const txt = (btn.innerText || btn.textContent || '').trim().toLowerCase();
-          if (txt.includes('mais') || txt.includes('more') || txt.includes('resposta') || txt === '+' || txt === '…') {
+          const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+          if (
+            txt.includes('mais') || txt.includes('more') || txt.includes('carregar') ||
+            txt.includes('resposta') || txt === '+' || txt === '…' ||
+            aria.includes('coment') || aria.includes('mais')
+          ) {
             try { btn.click(); } catch (e) {}
           }
         });
-        // Rolar todas as caixas de overflow
-        document.querySelectorAll('div[role="dialog"], div[style*="overflow"]').forEach(d => {
-          d.scrollTop += 3000;
+
+        // 3. Capturar comentários diretamente do DOM
+        const collected = [];
+        document.querySelectorAll('ul li, div[role="listitem"]').forEach(li => {
+          const userEl = li.querySelector('a[href^="/"][role="link"], h3 a, a[tabindex="0"]');
+          const textEl = li.querySelector('span[dir="auto"], span:not([class])');
+          if (userEl && textEl) {
+            const u = userEl.textContent.trim().replace(/^@/, '');
+            const t = textEl.textContent.trim().replace(/\n/g, ' ');
+            if (u && t && u !== 'radardorole') {
+              collected.push({ user: u, comment: t });
+            }
+          }
         });
-        window.scrollBy(0, 3000);
+
+        // 4. Capturar comentários de tags de script JSON embutidas
+        document.querySelectorAll('script[type="application/json"]').forEach(s => {
+          try {
+            const txt = s.textContent;
+            if (txt && (txt.includes('edge_media_to_parent_comment') || txt.includes('comment_text'))) {
+              const regex = /"username"\s*:\s*"([^"]+)"[\s\S]*?"text"\s*:\s*"([^"]+)"/g;
+              let match;
+              while ((match = regex.exec(txt)) !== null) {
+                if (match[1] && match[2] && match[1] !== 'radardorole') {
+                  collected.push({ user: match[1], comment: match[2].replace(/\\n/g, ' ') });
+                }
+              }
+            }
+          } catch(e) {}
+        });
+
+        return collected;
       });
 
-      await new Promise(r => setTimeout(r, 500));
+      // Mesclar itens lidos do DOM
+      if (domItems && domItems.length > 0) {
+        domItems.forEach(item => {
+          comments.set(`${item.user}|${item.comment}`, item);
+        });
+      }
+
+      await new Promise(r => setTimeout(r, 600));
 
       if (comments.size === lastCount) {
         unchangedSteps++;
-        if (unchangedSteps >= 20 && i > 20) {
+        // Só encerra se já coletou comentários e parou de crescer por 20 passos
+        if (unchangedSteps >= 25 && comments.size > 0) {
           console.log(`✅ Fim dos comentários após ${i} passos. Total: ${comments.size}`);
           break;
         }
