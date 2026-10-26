@@ -1,28 +1,20 @@
 FROM ghcr.io/puppeteer/puppeteer:21
 
-# Diretório de trabalho
-WORKDIR /app
+# Usar o Chrome já instalado na imagem oficial
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable \
+    PORT=3000
+
+# Diretório padrão com permissão total do pptruser
+WORKDIR /home/pptruser
 
 # Copiar dependências e instalar
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
-# Copiar código
+# Copiar o código do servidor
 COPY server.js ./
 
-# Criar pasta para cookies persistentes e dar permissão
-RUN mkdir -p /app/cookies && chown -R pptruser:pptruser /app
-USER pptruser
-
-# Variáveis de ambiente (sobrescrever no Easypanel)
-ENV PORT=3000
-ENV IG_USERNAME=""
-ENV IG_PASSWORD=""
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
-
-# Expor porta
 EXPOSE 3000
 
-# Iniciar
 CMD ["node", "server.js"]

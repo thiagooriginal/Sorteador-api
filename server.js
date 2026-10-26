@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const COOKIES_FILE = '/app/cookies/instagram_session.json';
+const COOKIES_FILE = path.join(__dirname, 'cookies_session.json');
 const IG_USER = process.env.IG_USERNAME || '';
 const IG_PASS = process.env.IG_PASSWORD || '';
 
